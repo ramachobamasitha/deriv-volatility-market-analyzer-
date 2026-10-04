@@ -1,0 +1,166 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deriv Volatility Strategy Analyzer</title>
+<style>
+body{margin:0;background:#07111f;color:#eef6ff;font-family:Arial,sans-serif}.wrap{max-width:1050px;margin:auto;padding:20px}.hero,.card,.final{border-radius:20px;padding:22px}.hero{background:linear-gradient(135deg,#163b66,#087c78)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:16px}.card,.final{margin-top:14px;background:#101d30;border:1px solid #29415f}label{display:block;font-weight:bold;margin-bottom:8px}select,button{width:100%;padding:13px;border-radius:11px;font-size:15px}select{background:#091525;color:white;border:1px solid #405774}button{margin-top:14px;border:0;background:linear-gradient(90deg,#08d69a,#1aa8ff);font-weight:900}.final{text-align:center;border:2px solid #315a7d}.result{font-size:30px;font-weight:900;margin:15px;background:linear-gradient(90deg,#38f2af,#65d9ff);color:transparent;background-clip:text}.meta{line-height:1.7;color:#c9d8e8}.status{margin-top:10px;color:#a9c0d5;font-size:13px}
+</style></head><body><div class="wrap">
+<div class="hero"><h1>⚡ Deriv Volatility Strategy Analyzer</h1><div>New standalone analyzer • Volatility markets only • Demo-first</div></div>
+<div class="grid">
+<div class="card"><label>Volatility Market</label><select id="market"><option>Volatility 10 (1s)</option><option>Volatility 25 (1s)</option><option>Volatility 50 (1s)</option><option>Volatility 75 (1s)</option><option>Volatility 100 (1s)</option><option>Volatility 10</option><option>Volatility 25</option><option>Volatility 50</option><option>Volatility 75</option><option>Volatility 100</option></select><div class="status">Live Deriv WebSocket layer: connect to receive real ticks.</div></div>
+<div class="card"><label>Strategy</label><select id="strategy"><option>Matches Pattern Prediction</option><option>Matches</option><option>Differs</option><option>Even</option><option>Odd</option><option>Over</option><option>Under</option><option>High Ticks</option><option>Low Ticks</option><option>Rise</option><option>Fall</option><option>Asian</option></select><div class="status">Up/Down removed • Specific Results removed.</div></div>
+<div class="card"><label>Tick Sample</label><select id="ticks"><option>100</option><option>250</option><option selected>500</option><option>1000</option><option>2000</option></select><button id="connectBtn" onclick="connectDeriv()">🔌 Connect to Deriv</button><button id="analyzeBtn" onclick="runAnalysis()" disabled>⚡ Analyze Market</button></div></div>
+<div class="final"><h2>FINAL RESULT</h2><div id="result" class="result">WAIT</div><div id="details" class="meta">Run an analysis to produce the final result.</div></div>
+</div>
+<script>
+let ws=null, connected=false, ticks=[], frozen=null;
+
+const SYMBOLS={
+"Volatility 10 (1s)":"1HZ10V",
+"Volatility 25 (1s)":"1HZ25V",
+"Volatility 50 (1s)":"1HZ50V",
+"Volatility 75 (1s)":"1HZ75V",
+"Volatility 100 (1s)":"1HZ100V",
+"Volatility 10":"R_10",
+"Volatility 25":"R_25",
+"Volatility 50":"R_50",
+"Volatility 75":"R_75",
+"Volatility 100":"R_100"
+};
+
+function setStatus(t){
+ const e=document.querySelector('.status');
+ if(e)e.textContent=t;
+}
+
+function connectDeriv(){
+ if(ws && ws.readyState===1){ ws.close(); return; }
+ setStatus('Connecting to Deriv market-data stream...');
+ ws=new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
+ ws.onopen=()=>{
+   connected=true;
+   document.getElementById('connectBtn').textContent='🔌 Disconnect';
+   document.getElementById('analyzeBtn').disabled=false;
+   subscribe();
+ };
+ ws.onmessage=(ev)=>{
+   const m=JSON.parse(ev.data);
+   if(m.error){setStatus('Deriv error: '+m.error.message);return;}
+   if(m.msg_type==='tick' && m.tick){
+     ticks.push({quote:Number(m.tick.quote),digit:lastDigit(m.tick.quote),epoch:m.tick.epoch});
+     if(ticks.length>2500) ticks.shift();
+   }
+   if(m.msg_type==='history' && m.history){
+     const q=(m.history.prices||[]).map(Number);
+     ticks=q.map((quote,i)=>({quote,digit:lastDigit(quote),epoch:(m.history.times||[])[i]}));
+   }
+ };
+ ws.onerror=()=>setStatus('Could not connect to Deriv. Check connection and try again.');
+ ws.onclose=()=>{connected=false;document.getElementById('connectBtn').textContent='🔌 Connect to Deriv';};
+}
+
+function subscribe(){
+ const symbol=SYMBOLS[document.getElementById('market').value];
+ if(!symbol){setStatus('Selected market is not mapped yet.');return;}
+ ticks=[];
+ ws.send(JSON.stringify({ticks_history:symbol,count:1000,end:'latest',style:'ticks'}));
+ ws.send(JSON.stringify({ticks:symbol,subscribe:1}));
+ setStatus('Connected. Receiving live ticks for '+symbol+'.');
+}
+
+document.getElementById('market').addEventListener('change',()=>{
+ if(connected) subscribe();
+});
+
+function lastDigit(v){
+ const s=Math.abs(Number(v)).toFixed(10).replace(/0+$/,'');
+ const a=s.split('.');
+ return Number((a[1]||'0').slice(-1));
+}
+
+function sample(){
+ const n=Number(document.getElementById('ticks').value);
+ return ticks.slice(-n);
+}
+
+function counts(data){
+ const c=Array(10).fill(0);
+ data.forEach(x=>c[x.digit]++);
+ return c;
+}
+
+function rankedDigits(data){
+ const c=counts(data),n=data.length;
+ return c.map((x,d)=>({d,n:x,p:n?x/n*100:0})).sort((a,b)=>b.n-a.n);
+}
+
+function patternSignal(data){
+ if(data.length<100)return null;
+ const seq=data.map(x=>x.digit);
+ const candidates=[];
+ for(let len=1;len<=4;len++){
+   const key=seq.slice(-len).join(',');
+   let hits=0,total=0,following=Array(10).fill(0);
+   for(let i=len;i<seq.length-1;i++){
+     if(seq.slice(i-len,i).join(',')===key){
+       total++; hits++; following[seq[i]]++;
+     }
+   }
+   if(total>=8){
+     const r=following.map((n,d)=>({d,n,p:n/total*100})).sort((a,b)=>b.n-a.n);
+     candidates.push({len,total,best:r[0],second:r[1]||{p:0}});
+   }
+ }
+ candidates.sort((a,b)=>(b.total*(b.best.p-b.second.p))-(a.total*(a.best.p-a.second.p)));
+ return candidates[0]||null;
+}
+
+function final(text,detail){
+ document.getElementById('result').textContent=text;
+ document.getElementById('details').innerHTML=detail;
+}
+
+function runAnalysis(){
+ if(!connected){final('WAIT','Connect to Deriv first.');return;}
+ const data=sample();
+ const s=document.getElementById('strategy').value;
+ const market=document.getElementById('market').value;
+ const n=data.length;
+
+ if(n<30){final('WAIT','Not enough live ticks yet. Collect more data and analyze again.');return;}
+
+ const r=rankedDigits(data),top=r[0],second=r[1],gap=top.p-second.p;
+ let text='WAIT',detail=`<b>${market}</b><br>Analyzed: <b>${n.toLocaleString()} ticks</b><br>`;
+
+ if(s==='Matches Pattern Prediction'){
+   const p=patternSignal(data);
+   if(p && p.best.p>=30 && (p.best.p-p.second.p)>=5){
+     text=`MATCHES — DIGIT ${p.best.d}`;
+     detail+=`<b>Pattern:</b> last ${p.len} digit(s) repeated <b>${p.total}</b> times.<br><b>Next digit:</b> ${p.best.d}<br><b>Historical follow-through:</b> ${p.best.p.toFixed(1)}%`;
+   }else detail+='<b>WAIT:</b> no sufficiently strong repeated Matches pattern was found.';
+ }else if(s==='Matches'||s==='Differs'){
+   if(top.p>=12 && gap>=2){
+     text=`${s.toUpperCase()} — DIGIT ${top.d}`;
+     detail+=`<b>Automatically selected digit:</b> ${top.d}<br>Digit frequency: ${top.p.toFixed(1)}%<br>Lead over second digit: ${gap.toFixed(1)} percentage points.`;
+   }else detail+='<b>WAIT:</b> no sufficiently distinct target digit.';
+ }else if(s==='Over'||s==='Under'){
+   if(top.p>=12 && gap>=2){
+     text=`${s.toUpperCase()} — BARRIER ${top.d}`;
+     detail+=`<b>Automatically selected barrier:</b> ${top.d}<br>Leading digit frequency: ${top.p.toFixed(1)}%.`;
+   }else detail+='<b>WAIT:</b> no sufficiently distinct barrier.';
+ }else if(s==='Even'||s==='Odd'){
+   const even=data.filter(x=>x.digit%2===0).length/n*100;
+   const odd=100-even;
+   text=even>=odd?'EVEN':'ODD';
+   detail+=`Even: <b>${even.toFixed(1)}%</b> • Odd: <b>${odd.toFixed(1)}%</b>`;
+ }else if(s==='Rise'||s==='Fall'){
+   let rise=0,fall=0;
+   for(let i=1;i<data.length;i++){if(data[i].quote>data[i-1].quote)rise++;else if(data[i].quote<data[i-1].quote)fall++;}
+   const rp=rise/(rise+fall)*100||0,fp=100-rp;
+   text=rp>fp?'RISE':'FALL';
+   detail+=`Rise: <b>${rp.toFixed(1)}%</b> • Fall: <b>${fp.toFixed(1)}%</b>`;
+ }else{
+   text='WAIT';
+   detail+=`<b>${s}</b> analysis requires its contract-specific live calculation layer before a final signal is issued.`;
+ }
+ detail+='<br><br><b>Result locked</b> until Analyze Market is pressed again.';
+ final(text,detail);
+}
+</script></body></html>
